@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Macros</title>
+<style>
+  body { font-family: -apple-system, sans-serif; background:#111; color:#eee; margin:0; padding:16px; }
+  h1 { font-size:22px; }
+  button, label.btn { display:block; width:100%; padding:14px; margin:10px 0; border:0; border-radius:10px; background:#2e7d32; color:#fff; font-size:16px; text-align:center; box-sizing:border-box; }
+  input[type=text] { width:100%; padding:12px; border-radius:8px; border:0; box-sizing:border-box; margin:6px 0; }
+  #preview { width:100%; border-radius:10px; margin-top:10px; display:none; }
+  .card { background:#1e1e1e; border-radius:10px; padding:12px; margin:10px 0; }
+  .total { font-size:18px; font-weight:bold; }
+  small { color:#999; }
+</style>
+</head>
+<body>
+<h1>Calorias e Macros</h1>
+
+<div class="card" id="keyBox">
+  <small>Cole sua chave do Gemini (fica só no seu aparelho):</small>
+  <input type="text" id="apiKey" placeholder="Chave da API">
+  <button onclick="salvarChave()">Salvar chave</button>
+</div>
+
+<label class="btn">Tirar foto do prato
+  <input type="file" accept="image/*" capture="environment" id="foto" hidden>
+</label>
+
+<input type="text" id="dica" placeholder="Dica opcional: ex. 150g de arroz, frango grelhado">
+<img id="preview">
+<div id="resultado"></div>
+
+<div class="card">
+  <div class="total" id="totalHoje"></div>
+  <button onclick="limparHoje()" style="background:#b71c1c">Zerar o dia</button>
+</div>
+<div id="historico"></div>
+
+<script>
+const MODELO = "gemini-flash-lite-latest";
+
+function chave() { return localStorage.getItem("gkey") || ""; }
+function salvarChave() {
+  localStorage.setItem("gkey", document.getElementById("apiKey").value.trim());
+  document.getElementById("keyBox").style.display = "none";
+}
+if (chave()) document.getElementById("keyBox").style.display = "none";
+
+function hoje() { return new Date().toISOString().slice(0,10); }
+function carregar() { return JSON.parse(localStorage.getItem("refeicoes") || "[]"); }
+function gravar(l) { localStorage.setItem("refeicoes", JSON.stringify(l)); }
+
+function mostrarHistorico() {
+  const lista = carregar().filter(r => r.dia === hoje());
+  const t = lista.reduce((a, r) => ({k:a.k+r.kcal, p:a.p+r.p, c:a.c+r.c, g:a.g+r.g}), {k:0,p:0,c:0,g:0});
+  document.getElementById("totalHoje").innerText =
+    `Hoje: ${Math.round(t.k)} kcal | P ${Math.round(t.p)}g | C ${Math.round(t.c)}g | G ${Math.round(t.g)}g`;
+  document.getElementById("historico").innerHTML = lista.map(r =>
+    `<div class="card"><b>${r.nome}</b><br>${r.kcal} kcal | P ${r.p}g | C ${r.c}g | G ${r.g}g</div>`).join("");
+}
+
+function limparHoje() {
+  gravar(carregar().filter(r => r.dia !== hoje()));
+  mostrarHistorico();
+}
+
+function paraBase64(file) {
+  return new Promise(res => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result.split(",")[1]);
+    fr.readAsDataURL(file);
+  });
+}
+
+document.getElementById("foto").addEventListener("change", async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const out = document.getElementById("resultado");
+  if (!chave()) { out.innerHTML = "Cole a chave primeiro."; return; }
+
+  const prev = document.getElementById("preview");
+  prev.src = URL.createObjectURL(file);
+  prev.style.display = "block";
+  out.innerHTML = "Analisando...";
+
+  const b64 = await paraBase64(file);
+  const dica = document.getElementById("dica").value;
+  const prompt = `Analise esta refeição e estime calorias e macros. ${dica ? "Informação do usuário: " + dica + "." : ""} Responda APENAS com JSON no formato: {"nome":"...","kcal":0,"p":0,"c":0,"g":0}, onde p=proteína, c=carboidrato, g=gordura, em gramas.`;
+
+  try {
+    const r = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${MODELO}:generateContent?key=${chave()}`,
+      {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          contents: [{ parts: [
+            { text: prompt },
+            { inline_data: { mime_type: file.type || "image/jpeg", data: b64 } }
+          ]}],
+          generationConfig: { responseMimeType: "application/json" }
+        })
+      }
+    );
+    const j = await r.json();
+    const txt = j.candidates[0].content.parts[0].text;
+    const d = JSON.parse(txt);
+    const l = carregar();
+    l.push({ dia: hoje(), nome: d.nome, kcal: d.kcal, p: d.p, c: d.c, g: d.g });
+    gravar(l);
+    out.innerHTML = `<div class="card"><b>${d.nome}</b><br>${d.kcal} kcal | P ${d.p}g | C ${d.c}g | G ${d.g}g</div>`;
+    mostrarHistorico();
+  } catch (err) {
+    out.innerHTML = "Erro: " + err.message + ". Confira a chave ou tente de novo.";
+  }
+});
+
+mostrarHistorico();
+</script>
+</body>
+</html>
